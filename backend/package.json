@@ -2,15 +2,19 @@
   "name": "sage-backend",
   "version": "1.0.0",
   "type": "module",
-  "description": "Backend for Sage AI companion",
+  "description": "Sage — AI group chat mediator for iMessage via Photon Spectrum",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev":   "node --watch server.js"
+    "dev": "node --watch server.js",
+    "seed": "node seed.js"
   },
   "dependencies": {
-    "cors":    "^2.8.5",
-    "dotenv":  "^16.0.0",
-    "express": "^4.18.0"
+    "@anthropic-ai/sdk": "^0.39.0",
+    "better-sqlite3": "^9.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.0",
+    "express": "^4.18.0",
+    "openai": "^4.40.0"
   }
 }

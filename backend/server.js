@@ -1,97 +1,140 @@
-// THE ENTRY POINT. Run this with: node server.js
-// Creates the web server on port 3001.
-// Routes:
-//   POST /api/chat  — frontend sends a message, gets back Sage's reply
-//   POST /api/alert — frontend triggers an SMS alert to emergency contacts
-
-import express  from "express";
-import cors     from "cors";
-import dotenv   from "dotenv";
-
-dotenv.config(); // loads GEMINI_API_KEY etc. from .env
-
-const app  = express();
-const PORT = process.env.PORT || 3001;
-
-app.use(cors());         // lets the frontend (localhost:5173) talk to this server
-app.use(express.json()); // parses incoming JSON bodies
-
-
-// ── POST /api/chat ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// server.js — Entry point
 //
-// What the frontend sends:
-//   { messages: [{role, content}, ...], systemPrompt: string }
+// Run with:  node server.js   (or npm run dev for auto-reload)
 //
-// What this returns:
-//   { text: string, audioUrl: string | null }
-//
-// Flow: frontend → here → Gemini → here → frontend
-//       (audioUrl is null until elevenlabs.js is wired up)
-// ──────────────────────────────────────────────────────────────
-app.post("/api/chat", async (req, res) => {
-  const { messages, systemPrompt } = req.body;
+// Endpoints:
+//   POST /webhook/photon     ← Photon sends all group messages here
+//   GET  /api/messages       ← admin: recent messages
+//   GET  /api/memories       ← admin: stored facts
+//   GET  /api/interventions  ← admin: Sage's intervention history
+//   POST /api/simulate       ← dev: inject a fake message without Photon
+// ─────────────────────────────────────────────────────────────────────────────
 
-  try {
-    // Gemini expects "model" for assistant turns, "user" for user turns
-    const contents = messages.map(m => ({
-      role:  m.role === "assistant" ? "model" : "user",
-      parts: [{ text: m.content }],
-    }));
+import express  from 'express';
+import cors     from 'cors';
+import dotenv   from 'dotenv';
+import { verifyWebhookSignature, parseWebhookPayload } from './photon.js';
+import { storeMessage, storeMemory, getRecent, getMemories, getInterventions } from './memory.js';
+import { extractMemoryItems } from './claude.js';
+import { runInterventionPipeline } from './intervention.js';
 
-    const geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
-      {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          // systemPrompt goes here — Gemini reads it before every reply
-          system_instruction: { parts: [{ text: systemPrompt }] },
-          contents,
-        }),
-      }
-    );
+dotenv.config();
 
-    if (!geminiRes.ok) {
-      const err = await geminiRes.json().catch(() => ({}));
-      console.error("Gemini error:", err);
-      return res.status(500).json({ error: "Gemini returned an error" });
-    }
+const app      = express();
+const PORT     = process.env.PORT || 3001;
+const GROUP_ID = process.env.GROUP_ID || 'hackathon-team';
 
-    const data = await geminiRes.json();
-    const text = data.candidates[0].content.parts[0].text;
+app.use(cors());
 
-    // TODO: pass `text` to elevenlabs.js to get a real audioUrl
-    // For now: return null so ChatScreen falls back to browser TTS
-    res.json({ text, audioUrl: null });
+// Keep raw body available for webhook signature verification
+app.use('/webhook', express.raw({ type: 'application/json' }));
+app.use(express.json());
 
-  } catch (err) {
-    console.error("Chat route error:", err);
-    res.status(500).json({ error: err.message });
+// ── POST /webhook/photon ──────────────────────────────────────────────────────
+// Photon POSTs here for every message sent in the iMessage group.
+// This is the hot path — must complete quickly (Photon may have a timeout).
+
+app.post('/webhook/photon', async (req, res) => {
+  // Verify Photon's HMAC signature
+  const signature = req.headers['x-photon-signature'] || req.headers['x-signature'];
+  if (!verifyWebhookSignature(req.body, signature)) {
+    console.warn('[webhook] invalid signature — rejected');
+    return res.status(401).json({ error: 'invalid signature' });
   }
+
+  let payload;
+  try {
+    payload = parseWebhookPayload(JSON.parse(req.body.toString()));
+  } catch {
+    return res.status(400).json({ error: 'invalid JSON' });
+  }
+
+  const { groupId, sender, content, timestamp } = payload;
+
+  // Ignore empty messages and Sage's own messages (avoid feedback loop)
+  if (!content.trim() || sender === 'Sage') {
+    return res.json({ ok: true, action: 'ignored' });
+  }
+
+  console.log(`[webhook] ${sender}: ${content.slice(0, 80)}`);
+
+  // ── Acknowledge Photon immediately (respond fast) ─────────────────────────
+  res.json({ ok: true });
+
+  // ── Process asynchronously ────────────────────────────────────────────────
+  setImmediate(async () => {
+    try {
+      // 1. Store raw message
+      const messageId = await storeMessage({ groupId, sender, content, timestamp });
+
+      // 2. Extract memories (positions, decisions, issues)
+      const recentContext = getRecent(groupId, 10);
+      const memoryItems   = await extractMemoryItems(sender, content, recentContext);
+
+      for (const item of memoryItems) {
+        await storeMemory({
+          groupId,
+          type:      item.type,
+          content:   item.content,
+          sender:    item.sender,
+          timestamp: timestamp || new Date().toISOString(),
+          messageId,
+        });
+        console.log(`[memory] stored ${item.type}: ${item.content.slice(0, 60)}`);
+      }
+
+      // 3. Run intervention check
+      await runInterventionPipeline(groupId, { sender, content });
+
+    } catch (err) {
+      console.error('[webhook] async processing error:', err);
+    }
+  });
 });
 
+// ── Admin / debug endpoints ───────────────────────────────────────────────────
 
-// ── POST /api/alert ────────────────────────────────────────────
-//
-// What the frontend sends:
-//   { contacts: [{id, name, phone}], userName: string }
-//
-// What this returns:
-//   [{ id, success: true|false }]
-//
-// TODO: wire this into photon.js once Photon API key is ready
-// For now: returns mock success so the UI flow can be demoed
-// ──────────────────────────────────────────────────────────────
-app.post("/api/alert", async (req, res) => {
-  const { contacts, userName } = req.body;
-  console.log(`Alert triggered for ${userName} → ${contacts.length} contact(s)`);
-
-  // TODO: replace with real Photon SMS calls from photon.js
-  const results = contacts.map(c => ({ id: c.id, success: true }));
-  res.json(results);
+app.get('/api/messages', (req, res) => {
+  const messages = getRecent(req.query.groupId || GROUP_ID, parseInt(req.query.limit) || 50);
+  res.json(messages);
 });
 
+app.get('/api/memories', (req, res) => {
+  const memories = getMemories(req.query.groupId || GROUP_ID, req.query.type || null);
+  res.json(memories);
+});
+
+app.get('/api/interventions', (req, res) => {
+  const interventions = getInterventions(req.query.groupId || GROUP_ID);
+  res.json(interventions);
+});
+
+// Dev endpoint: inject a fake message (no Photon needed for local testing)
+app.post('/api/simulate', async (req, res) => {
+  const { sender, content, groupId } = req.body;
+  if (!sender || !content) {
+    return res.status(400).json({ error: 'sender and content required' });
+  }
+
+  const gid       = groupId || GROUP_ID;
+  const timestamp = new Date().toISOString();
+  const messageId = await storeMessage({ groupId: gid, sender, content, timestamp });
+
+  const recentContext = getRecent(gid, 10);
+  const memoryItems   = await extractMemoryItems(sender, content, recentContext);
+  for (const item of memoryItems) {
+    await storeMemory({ groupId: gid, type: item.type, content: item.content, sender: item.sender, timestamp, messageId });
+  }
+
+  const result = await runInterventionPipeline(gid, { sender, content });
+  res.json({ messageId, memoriesExtracted: memoryItems.length, ...result });
+});
+
+// ── Start ──────────────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
   console.log(`Sage backend running → http://localhost:${PORT}`);
+  console.log(`Photon webhook URL   → POST http://localhost:${PORT}/webhook/photon`);
+  console.log(`Admin dashboard      → http://localhost:${PORT}/api/messages`);
 });
