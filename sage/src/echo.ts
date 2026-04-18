@@ -40,30 +40,40 @@ async function main() {
     "Sage is listening via Spectrum (iMessage: DMs and group chats). Ctrl+C to stop."
   );
 
-  for await (const [space, message] of app.messages) {
-    const spaceMeta = space as { id: string; type?: "dm" | "group" };
-    const derivedGroup = likelyGroupChatFromSpaceId(space.id);
-    console.log(
-      "Incoming summary:",
-      JSON.stringify({
-        platform: message.platform,
-        spaceType: spaceMeta.type,
-        spaceId: space.id,
-        derivedLikelyGroup: derivedGroup,
-        contentType: message.content.type,
-      })
-    );
-    console.log("Incoming full:", JSON.stringify(message, null, 2));
+  try {
+    for await (const [space, message] of app.messages) {
+      const spaceMeta = space as { id: string; type?: "dm" | "group" };
+      const derivedGroup = likelyGroupChatFromSpaceId(space.id);
+      console.log(
+        "Incoming summary:",
+        JSON.stringify({
+          platform: message.platform,
+          spaceType: spaceMeta.type,
+          spaceId: space.id,
+          derivedLikelyGroup: derivedGroup,
+          contentType: message.content.type,
+        })
+      );
+      console.log("Incoming full:", JSON.stringify(message, null, 2));
 
-    if (message.content.type !== "text") continue;
+      if (message.content.type !== "text") continue;
 
-    const text = message.content.text;
-    if (text.startsWith(SAGE_PREFIX)) continue;
+      const text = message.content.text;
+      if (text.startsWith(SAGE_PREFIX)) continue;
 
-    const fromSelf = (message as { isFromMe?: boolean }).isFromMe === true;
-    if (fromSelf) continue;
+      const fromSelf = (message as { isFromMe?: boolean }).isFromMe === true;
+      if (fromSelf) continue;
 
-    await space.send(`${SAGE_PREFIX} ${text}`);
+      try {
+        await space.send(`${SAGE_PREFIX} ${text}`);
+        console.log("-> echo sent to", space.id);
+      } catch (err) {
+        console.error("-> echo send failed for", space.id, err);
+      }
+    }
+    console.warn("Message stream ended cleanly (iterator completed).");
+  } catch (err) {
+    console.error("Message stream errored:", err);
   }
 }
 
