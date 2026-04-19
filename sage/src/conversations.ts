@@ -12,7 +12,6 @@ const AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN!;
 const CONVERSATION_SID = process.env.TWILIO_CONVERSATION_SID!;
 const FROM_NUMBER = process.env.TWILIO_FROM_NUMBER!;
 const PORT = parseInt(process.env.PORT ?? "3001", 10);
-const GROUP_CHAT_MEMBERS: string[] = (process.env.GROUP_CHAT_MEMBERS ?? "").split(",").filter(Boolean);
 
 const twilioClient = twilio(ACCOUNT_SID, AUTH_TOKEN);
 
@@ -40,15 +39,26 @@ export function startServer(): void {
   });
 
   app.post("/webhook", async (req, res) => {
-    console.log("Webhook received", JSON.stringify(req.body, null, 2));
+    const eventType = req.body.EventType;
+    if (eventType && eventType !== "onMessageAdded") {
+      return res.status(200).send();
+    }
+
+    const webhookType = req.headers["x-twilio-webhook-enabled"];
+    void webhookType;
+    if (!req.body.Body || req.body.Body === "") {
+      return res.status(200).send();
+    }
+
+    const author = req.body.Author;
+    if (!author || author === "Sage" || author === FROM_NUMBER) {
+      return res.status(200).send();
+    }
 
     // Always acknowledge Twilio immediately with 200.
     res.status(200).send("");
 
     const body: string = req.body.Body ?? "";
-    const author: string = req.body.Author ?? "";
-
-    if (isSageAuthor(author)) return;
 
     const speaker = resolveName(author);
     const message: Message = {
@@ -63,42 +73,22 @@ export function startServer(): void {
       await ingest(CONVERSATION_SID, [message]);
       console.log(`[Memory] Ingested message from ${message.speaker}`);
 
+      console.log("[Agent] Classifying...");
       const result = await classify(CONVERSATION_SID, message);
+      console.log(`[Agent] intervene: ${result.intervene}`);
 
       if (!result.intervene) {
-        console.log("[Classify] intervene: false — continuing to listen");
+        console.log("[Agent] Staying silent");
         return;
       }
 
-      console.log("[Classify] intervene: true — intervention triggered");
-
-      if (result.retrievedContext.length > 0) {
-        const top = result.retrievedContext[0]!;
-        console.log(`[Retrieve] Top match: "${top.content.slice(0, 80)}"`);
-      }
-
+      console.log("[Agent] Generating response...");
       const replyText = await respond(CONVERSATION_SID, result.retrievedContext, message);
       recordSageSent(CONVERSATION_SID);
 
-      console.log(`[Sage → Spectrum]: ${replyText}`);
-
-      // Send via Spectrum DM to each group member — primary delivery path.
-      console.log(`[Spectrum] Sending via Spectrum DM to ${GROUP_CHAT_MEMBERS.length} members`);
-      for (const member of GROUP_CHAT_MEMBERS) {
-        await send(member, replyText);
-      }
-
-      // Fallback: also post into Twilio conversation directly
-      // in case Spectrum DM delivery is unavailable.
-      // Spectrum is the primary path; this is the patch.
-      console.log("[Twilio fallback] Posting to conversation as Sage");
-      await twilioClient.conversations.v1
-        .conversations(CONVERSATION_SID)
-        .messages.create({
-          author: "Sage",
-          body: `Sage: ${replyText}`,
-          xTwilioWebhookEnabled: "true",
-        });
+      console.log("[Agent] Intervention triggered — routing through Spectrum");
+      await send(process.env.TWILIO_CONVERSATION_SID!, replyText);
+      console.log("[Twilio] Message delivered to group chat");
     } catch (err) {
       console.error("[Error]", err);
     }
@@ -134,7 +124,8 @@ export async function setupConversation(): Promise<void> {
     return;
   }
 
-  for (const memberNumber of GROUP_CHAT_MEMBERS) {
+  const members = (process.env.GROUP_CHAT_MEMBERS ?? "").split(",").filter(Boolean);
+  for (const memberNumber of members) {
     try {
       await twilioClient.conversations.v1
         .conversations(conversationSid)
