@@ -14,12 +14,16 @@
   "license": "ISC",
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
+    "body-parser": "^2.2.2",
     "chromadb": "^3.4.3",
     "dotenv": "^17.4.2",
+    "express": "^5.2.1",
     "spectrum-ts": "^0.4.0",
+    "twilio": "^5.13.1",
     "voyageai": "^0.2.1"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
     "@types/node": "^25.6.0",
     "patch-package": "^8.0.0",
     "tsx": "^4.21.0",

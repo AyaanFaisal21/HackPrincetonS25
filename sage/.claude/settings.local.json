@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sqlite3 *)",
+      "Bash(npm install *)",
+      "Bash(kill 46963 46962 46648 46647)"
+    ]
+  }
+}

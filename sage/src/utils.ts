@@ -1,6 +1,10 @@
 import "dotenv/config";
+import { createRequire } from "node:module";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { VoyageAIClient } from "voyageai";
+
+// voyageai's ESM build has broken bare imports; force the CJS build instead.
+const _require = createRequire(import.meta.url);
+const { VoyageAIClient } = _require("voyageai") as typeof import("voyageai");
 
 export function getGeminiClient() {
   const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);

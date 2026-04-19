@@ -1,0 +1,28 @@
+diff --git a/node_modules/@photon-ai/imessage-kit/dist/index.js b/node_modules/@photon-ai/imessage-kit/dist/index.js
+index 50642b6..94cba78 100644
+--- a/node_modules/@photon-ai/imessage-kit/dist/index.js
++++ b/node_modules/@photon-ai/imessage-kit/dist/index.js
+@@ -1325,6 +1325,7 @@ var MessageWatchSource = class {
+   hasPendingTrigger = false;
+   walWatcher = null;
+   dirWatcher = null;
++  pollTimer = null;
+   constructor(options) {
+     this.database = options.database;
+     this.databasePath = options.databasePath;
+@@ -1347,6 +1348,7 @@ var MessageWatchSource = class {
+     try {
+       this.ensureWatching();
+       this.trigger();
++      this.pollTimer = setInterval(() => this.trigger(), 1000);
+       void this.consumeLoop();
+     } catch (error) {
+       this.isRunning = false;
+@@ -1359,6 +1361,7 @@ var MessageWatchSource = class {
+   stop() {
+     if (!this.isRunning) return;
+     this.isRunning = false;
++    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
+     this.detachWALWatcher();
+     this.detachDirWatcher();
+     if (this.triggerResolve) {
