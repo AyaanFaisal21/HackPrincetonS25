@@ -14,13 +14,13 @@ export interface ClassifyResult {
   anchorId: string | null;
 }
 
-// ── Tuning knobs ──────────────────────────────────────────────────────────────
+// ── Tuning knobs
 const SAGE_NAME = "Sage";
 const COOLDOWN_MS = 3 * 60_000; // 3 min between interventions
 const MIN_RELEVANCE = 0.75;     // ignore memories below this score
 const TOP_K = 3;                // max memories to pull per message
 
-// ── Sage's voice ──────────────────────────────────────────────────────────────
+//  Sage's voice/persona
 const SAGE_PERSONA = `You are Sage, a longtime participant in this group chat.
 You are not an assistant. You do not answer questions or offer help unless directly asked.
 You are a neutral witness — you hold the group's shared history and surface it when it matters.
@@ -29,7 +29,7 @@ When you speak, you reference something real from the past — a specific messag
 You keep your responses to 1-2 plain sentences. No markdown. No filler phrases like "Great point" or "Just a reminder."
 If you are not certain a past message is relevant, you stay silent.`;
 
-// ── Cooldown timer ────────────────────────────────────────────────────────────
+// ── Cooldown timer 
 // Tracks when Sage last spoke per chat. Reset by recordSageSent().
 const lastSageSpoke = new Map<string, number>();
 
@@ -37,7 +37,7 @@ export function recordSageSent(chatId: string): void {
   lastSageSpoke.set(chatId, Date.now());
 }
 
-// ── Trigger detection (Gemini) ────────────────────────────────────────────────
+// ── Trigger detection (Gemini)
 // Asks Gemini: does this message + past context warrant speaking?
 // Returns one of: contradiction | stuck | drift | none
 interface TriggerClassification {
@@ -92,7 +92,7 @@ Rules:
   }
 }
 
-// ── Intervention gate ─────────────────────────────────────────────────────────
+// ── Intervention gate 
 // Called for every incoming message. Three layers — fail any, Sage stays silent.
 export async function classify(
   chatId: string,
@@ -114,7 +114,7 @@ export async function classify(
   return { intervene: true, retrievedContext: highConfidence, anchorId };
 }
 
-// ── Response generation ───────────────────────────────────────────────────────
+// ── Response generation
 // Only runs if classify() said yes. Writes what Sage actually sends.
 export async function respond(
   chatId: string,

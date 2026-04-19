@@ -1,30 +1,23 @@
+// echo.ts — Author: Bayo Bandele, 4/18/26
+// Connects to iMessage via Spectrum. Routes every message through the agent pipeline.
+
 import { Spectrum } from "spectrum-ts";
 import { imessage } from "spectrum-ts/providers/imessage";
 import "dotenv/config";
+import { classify, respond, recordSageSent } from "./agent.js";
+import type { Message } from "./agent.js";
+import { ingest } from "./memory.js";
 
-/**
- * Echo loop (Sage phase1): prove iMessage → our code → iMessage, in DMs and group chats.
- * Uses Photon Spectrum with dashboard credentials (no separate iMessage server URL).
- * @see https://docs.photon.codes/spectrum-ts/getting-started.md
- *
- * **DMs:** Events only arrive for the phone line(s) registered to your Photon project. You must
- * open Messages with **that** number (see startup log), not a random contact. Texting +1 555…
- * when your line is +1 609… will show “Delivered” in Apple’s UI but produce **no** `Incoming`
- * logs — Photon never sees that thread.
- *
- * Group chats: add the **same** provisioned number as a participant. If there are no `Incoming`
- * logs for a group, the hosted line is not in that thread (or it’s SMS-only).
- */
-const SAGE_PREFIX = "[Sage echo]:";
+const SAGE_PREFIX = "[Sage]:";
 
-/** Matches Spectrum patch: group GUIDs are not only `;+;` (many use `;-;chat…`). */
+// Detects group chats from the space ID format Spectrum uses
 function likelyGroupChatFromSpaceId(spaceId: string): boolean {
   const g = spaceId.toLowerCase();
   if (g.includes(";+;")) return true;
   return /;(sms|imessage);[-+];chat/i.test(g);
 }
 
-/** Loggable snapshot (avoids functions on `message` / circular refs breaking JSON.stringify). */
+// Safe snapshot for logging (avoids circular refs)
 function messageForLog(message: {
   id: string;
   platform: string;
@@ -44,7 +37,7 @@ function messageForLog(message: {
   };
 }
 
-/** Lists iMessage lines for this project so you DM the correct number (Spectrum Cloud API). */
+// Prints your Photon iMessage line(s) on startup so you know which number to text
 async function logPhotonImessageLines(projectId: string, projectSecret: string): Promise<void> {
   const host = process.env.SPECTRUM_CLOUD_URL ?? "spectrum.photon.codes";
   const base = host.startsWith("http") ? host : `https://${host}`;
@@ -57,10 +50,7 @@ async function logPhotonImessageLines(projectId: string, projectSecret: string):
       data?: { lines?: Array<{ platform: string; phoneNumber?: string }> };
     };
     if (!res.ok || !body.succeed || !body.data?.lines?.length) {
-      console.warn(
-        "Could not list Photon iMessage lines (check project / network). Status:",
-        res.status
-      );
+      console.warn("Could not list Photon iMessage lines. Status:", res.status);
       return;
     }
     const numbers = body.data.lines
@@ -70,11 +60,7 @@ async function logPhotonImessageLines(projectId: string, projectSecret: string):
       console.warn("No iMessage phone lines found for this project.");
       return;
     }
-    console.log(
-      "\n>>> Your Photon iMessage line(s) — send test DMs **to this number** (from another phone):\n   ",
-      numbers.join("\n    "),
-      "\n"
-    );
+    console.log("\n>>> Your Photon iMessage line(s):\n   ", numbers.join("\n    "), "\n");
   } catch (e) {
     console.warn("Could not fetch project lines (optional):", e);
   }
@@ -84,9 +70,7 @@ async function main() {
   const projectId = process.env.PHOTON_PROJECT_ID;
   const projectSecret = process.env.PHOTON_PROJECT_SECRET;
   if (!projectId || !projectSecret) {
-    console.error(
-      "Set PHOTON_PROJECT_ID and PHOTON_PROJECT_SECRET in .env (Photon dashboard → Project settings)."
-    );
+    console.error("Set PHOTON_PROJECT_ID and PHOTON_PROJECT_SECRET in .env");
     process.exit(1);
   }
 
@@ -98,47 +82,63 @@ async function main() {
     providers: [imessage.config()],
   });
 
-  console.log(
-    "Sage is listening via Spectrum (iMessage: DMs and group chats). Ctrl+C to stop."
-  );
+  console.log("Sage is listening (iMessage: DMs and group chats). Ctrl+C to stop.");
 
   try {
     for await (const [space, message] of app.messages) {
       const spaceMeta = space as { id: string; type?: "dm" | "group" };
       const derivedGroup = likelyGroupChatFromSpaceId(space.id);
-      console.log(
-        "Incoming summary:",
-        JSON.stringify({
-          platform: message.platform,
-          spaceType: spaceMeta.type,
-          spaceId: space.id,
-          derivedLikelyGroup: derivedGroup,
-          contentType: message.content.type,
-        })
-      );
-      console.log("Incoming full:", JSON.stringify(messageForLog(message), null, 2));
+      console.log("Incoming:", JSON.stringify({
+        spaceType: spaceMeta.type,
+        spaceId: space.id,
+        derivedLikelyGroup: derivedGroup,
+        contentType: message.content.type,
+      }));
+      console.log("Full:", JSON.stringify(messageForLog(message), null, 2));
 
+      // Only handle text messages
       if (message.content.type !== "text") continue;
-
       const text = message.content.text;
-      if (text.startsWith(SAGE_PREFIX)) continue;
 
+      // Guard: ignore Sage's own sent messages
+      if (text.startsWith(SAGE_PREFIX)) continue;
       const fromSelf = (message as { isFromMe?: boolean }).isFromMe === true;
       if (fromSelf) continue;
 
-      // Do not await send on the hot path: a slow/hanging send would block the iterator and
-      // stop all further incoming messages from being handled.
-      const out = `${SAGE_PREFIX} ${text}`;
+      // Map Spectrum message → agent Message shape
+      const senderRaw = message.sender as { name?: string; handle?: string } | string | null;
+      const speaker =
+        typeof senderRaw === "string"
+          ? senderRaw
+          : (senderRaw?.name ?? senderRaw?.handle ?? "unknown");
+
+      const msg: Message = {
+        speaker,
+        content: text,
+        timestamp: message.timestamp.toISOString(),
+      };
+
+      // Ingest into memory regardless of whether Sage intervenes
+      void ingest(space.id, [msg]);
+
+      // Run the intervention pipeline off the hot path so incoming messages never block
       void (async () => {
         try {
-          await space.send(out);
-          console.log("-> echo sent to", space.id);
+          const decision = await classify(space.id, msg);
+          if (!decision.intervene) return;
+
+          const reply = await respond(space.id, decision.retrievedContext, msg);
+          if (!reply) return;
+
+          await space.send(`${SAGE_PREFIX} ${reply}`);
+          recordSageSent(space.id);
+          console.log("-> Sage intervened in", space.id, "| anchor:", decision.anchorId);
         } catch (err) {
-          console.error("-> echo send failed for", space.id, err);
+          console.error("-> Agent pipeline failed for", space.id, err);
         }
       })();
     }
-    console.warn("Message stream ended cleanly (iterator completed).");
+    console.warn("Message stream ended cleanly.");
   } catch (err) {
     console.error("Message stream errored:", err);
   }
