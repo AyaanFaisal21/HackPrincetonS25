@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { getRegistration, insertRegistration } from "../db/index.js";
+import { sendImessage } from "../lib/imessage.js";
 
 const router = Router();
 
@@ -22,8 +23,10 @@ router.post("/", async (req, res) => {
   insertRegistration.run(normalized);
   console.log("New registration:", normalized);
 
-  // TODO: replace with real iMessage send via Photon/Spectrum
-  console.log(`[SEND] To: ${normalized} | "Hello"`);
+  // Fire and forget — don't block the response on iMessage delivery
+  sendImessage(normalized, "Hi I'm Sage, add my number to any group chat to get started.")
+    .then(() => console.log("iMessage sent to", normalized))
+    .catch((err) => console.error("iMessage send failed:", err.message));
 
   res.json({ success: true });
 });
