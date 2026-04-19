@@ -3,4 +3,5 @@ node_modules/
 audio_cache/
 ../database/sage.db
 *.log
-frontend/.DS_Store
+.DS_Store
+**/.DS_Store
