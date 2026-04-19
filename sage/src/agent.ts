@@ -29,11 +29,15 @@ You keep your responses to 1-2 plain sentences. No markdown. No filler phrases l
 If you are not certain a past message is relevant, you stay silent.`;
 
 // ── Cooldown timer ────────────────────────────────────────────────────────────
-// Tracks when Sage last spoke per chat. Reset by recordSageSent().
 const lastSageSpoke = new Map<string, number>();
+const lastMessageTime = new Map<string, number>();
 
 export function recordSageSent(chatId: string): void {
   lastSageSpoke.set(chatId, Date.now());
+}
+
+export function recordMessageReceived(chatId: string): void {
+  lastMessageTime.set(chatId, Date.now());
 }
 
 // ── Intervention gate ─────────────────────────────────────────────────────────
@@ -127,4 +131,63 @@ Example tone: "Looks like there's some tension here — on April 17th the group 
 
   const result = await model.generateContent(prompt);
   return result.response.text().trim();
+}
+
+// ── Mention detection ─────────────────────────────────────────────────────────
+export function isMentioned(text: string): boolean {
+  return /@sage/i.test(text);
+}
+
+// ── Silence + conflict detection ──────────────────────────────────────────────
+// Called 15-30s after the last message. Returns a proactive message if the
+// conversation appears stuck/conflicted, or null if it resolved naturally.
+export async function checkSilence(
+  chatId: string,
+  lastMessageContent: string
+): Promise<string | null> {
+  const lastSpoke = lastSageSpoke.get(chatId);
+  if (lastSpoke !== undefined && Date.now() - lastSpoke < COOLDOWN_MS) return null;
+
+  const recentChunks = await retrieve(chatId, lastMessageContent, TOP_K);
+  if (recentChunks.length === 0) return null;
+
+  const model = getGeminiClient();
+
+  const prompt = `You are Sage, a thoughtful AI participant in a group chat. The conversation has gone quiet.
+
+Last message sent:
+"${lastMessageContent}"
+
+Recent conversation context:
+${recentChunks.map((r, i) => `[${i + 1}] ${r.content}`).join("\n")}
+
+Classify this silence:
+- CONFLICT: the last message showed tension, contradiction, confusion, or an unresolved decision — the group may be stuck or unsure how to respond
+- RESOLVED: the conversation reached a natural conclusion, agreement, or simply wound down
+
+If CONFLICT: write a short, warm message (2 sentences max) that Sage could send to break the tension or surface the unresolved context. Do not take sides.
+If RESOLVED: stay silent.
+
+Respond with ONLY valid JSON:
+{"type": "conflict", "message": "what Sage says"}
+or
+{"type": "resolved"}`;
+
+  try {
+    const result = await model.generateContent(prompt);
+    const raw = result.response.text().trim();
+    const clean = raw.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+    const parsed = JSON.parse(clean) as { type: "conflict" | "resolved"; message?: string };
+
+    console.log(`[Agent] Silence type: ${parsed.type}`);
+
+    if (parsed.type === "conflict" && parsed.message) {
+      recordSageSent(chatId);
+      return parsed.message;
+    }
+    return null;
+  } catch (e) {
+    console.error("[Agent] checkSilence() error:", e);
+    return null;
+  }
 }
