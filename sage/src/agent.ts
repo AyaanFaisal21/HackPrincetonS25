@@ -17,8 +17,7 @@ export interface ClassifyResult {
 // ── Tuning knobs ──────────────────────────────────────────────────────────────
 const SAGE_NAME = "Sage";
 const COOLDOWN_MS = 3 * 60_000; // 3 min between interventions
-const MIN_RELEVANCE = 0.75;     // ignore memories below this score
-const TOP_K = 3;                // max memories to pull per message
+const TOP_K = 3;
 
 // ── Sage's voice ──────────────────────────────────────────────────────────────
 const SAGE_PERSONA = `You are Sage, a longtime participant in this group chat.
@@ -37,81 +36,63 @@ export function recordSageSent(chatId: string): void {
   lastSageSpoke.set(chatId, Date.now());
 }
 
-// ── Trigger detection (Gemini) ────────────────────────────────────────────────
-// Asks Gemini: does this message + past context warrant speaking?
-// Returns one of: contradiction | stuck | drift | none
-interface TriggerClassification {
-  trigger: "contradiction" | "stuck" | "drift" | "none";
-  anchorId: string | null;
-}
-
-async function classifyTrigger(
-  currentMessage: Message,
-  memories: MemoryResult[]
-): Promise<TriggerClassification> {
-  const model = getGeminiClient();
-
-  const prompt = `You are evaluating whether a group chat agent called Sage should intervene.
-
-CURRENT MESSAGE:
-${currentMessage.speaker}: "${currentMessage.content}"
-
-RELEVANT PAST CONTEXT (retrieved from chat history):
-${memories
-  .map(
-    (m, i) =>
-      `[${i}] [${m.startTime}] ${m.speakers.join(", ")}: "${m.content}" (relevance: ${m.relevanceScore.toFixed(2)})`
-  )
-  .join("\n")}
-
-Classify whether Sage should intervene. Return valid JSON only, no markdown:
-{
-  "trigger": "contradiction" | "stuck" | "drift" | "none",
-  "anchorIndex": number | null,
-  "reason": "one sentence"
-}
-
-Rules:
-- "contradiction": current message directly conflicts with a position in the retrieved context
-- "stuck": group is going in circles and retrieved context shows a prior resolution or decision
-- "drift": current message departs from a hard requirement stated in retrieved context
-- "none": no clear intervention warranted
-- When in doubt, return "none". Sage speaks rarely and only when grounded in retrieved context.`;
-
-  const result = await model.generateContent(prompt);
-  const raw = result.response.text().trim();
-  const clean = raw.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-
-  try {
-    const parsed = JSON.parse(clean);
-    const anchor = parsed.anchorIndex !== null ? memories[parsed.anchorIndex] : undefined;
-    const anchorId = anchor ? anchor.startTime : null;
-    return { trigger: parsed.trigger ?? "none", anchorId };
-  } catch {
-    return { trigger: "none", anchorId: null }; // bad response → stay silent
-  }
-}
-
 // ── Intervention gate ─────────────────────────────────────────────────────────
-// Called for every incoming message. Three layers — fail any, Sage stays silent.
 export async function classify(
   chatId: string,
   currentMessage: Message
 ): Promise<ClassifyResult> {
   const silence: ClassifyResult = { intervene: false, retrievedContext: [], anchorId: null };
 
-  if (currentMessage.speaker === SAGE_NAME) return silence;       // Layer 1a: ignore own messages
+  if (currentMessage.speaker === SAGE_NAME) return silence;
   const lastSpoke = lastSageSpoke.get(chatId);
-  if (lastSpoke !== undefined && Date.now() - lastSpoke < COOLDOWN_MS) return silence; // Layer 1b: cooldown
+  if (lastSpoke !== undefined && Date.now() - lastSpoke < COOLDOWN_MS) return silence;
 
-  const memories = await retrieve(chatId, currentMessage.content, TOP_K);
-  const highConfidence = memories.filter((m) => m.relevanceScore >= MIN_RELEVANCE);
-  if (highConfidence.length === 0) return silence;                // Layer 2: no strong memories
+  const retrievedContext = await retrieve(chatId, currentMessage.content, TOP_K);
+  if (retrievedContext.length === 0) return silence;
 
-  const { trigger, anchorId } = await classifyTrigger(currentMessage, highConfidence);
-  if (trigger === "none") return silence;                         // Layer 3: Gemini said no
+  const prompt = `You are Sage, an AI mediator in a group chat.
 
-  return { intervene: true, retrievedContext: highConfidence, anchorId };
+Current message:
+"${currentMessage.speaker}: ${currentMessage.content}"
+
+Relevant past context from this conversation:
+${retrievedContext.map((r, i) => `[${i + 1}] ${r.content}`).join("\n")}
+
+Based on the current message and past context, should Sage intervene?
+Intervene if:
+- Someone is contradicting a past decision
+- The group is relitigating something already resolved
+- There is confusion about what was previously agreed
+
+Do NOT intervene if:
+- The message is casual banter
+- The message is a simple question with no tension
+- There is no relevant past context
+
+Respond with ONLY valid JSON, no markdown, no backticks:
+{"intervene": true, "reason": "brief reason"}
+or
+{"intervene": false, "reason": "brief reason"}`;
+
+  try {
+    const model = getGeminiClient();
+    const result = await model.generateContent(prompt);
+    const raw = result.response.text().trim();
+    console.log(`[Agent] Gemini response: ${raw}`);
+
+    const clean = raw.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+    const parsed = JSON.parse(clean) as { intervene: boolean; reason: string };
+    console.log(`[Agent] Parsed: intervene=${parsed.intervene} reason=${parsed.reason}`);
+
+    return {
+      intervene: parsed.intervene,
+      retrievedContext,
+      anchorId: retrievedContext[0]?.startTime ?? null,
+    };
+  } catch (e) {
+    console.error("[Agent] classify() error:", e);
+    return { intervene: false, retrievedContext, anchorId: null };
+  }
 }
 
 // ── Response generation ───────────────────────────────────────────────────────
@@ -124,17 +105,25 @@ export async function respond(
   void chatId;
   const model = getGeminiClient();
 
-  const prompt = `${SAGE_PERSONA}
+  const prompt = `You are Sage, a thoughtful AI participant in a group chat.
+Your role is to surface relevant past context when the group
+is confused or contradicting itself. You are warm, concise,
+and non-authoritative — you never make decisions, you only
+reframe.
 
-Ground your response in the retrieved past context below. Do not make up facts.
+Current message:
+"${currentMessage.speaker}: ${currentMessage.content}"
 
-CURRENT MESSAGE:
-${currentMessage.speaker}: "${currentMessage.content}"
+Relevant past context:
+${context.map((r, i) => `[${i + 1}] ${r.content} (${new Date(r.startTime).toLocaleDateString()})`).join("\n")}
 
-RELEVANT PAST CONTEXT:
-${context.map((m) => `[${m.startTime}] ${m.speakers.join(", ")}: "${m.content}"`).join("\n")}
+Write a single short response (2-3 sentences max) that:
+- Acknowledges the confusion
+- References the specific past context by date and who said what
+- Does not take sides or make a decision
+- Sounds like a helpful participant, not a bot
 
-Write Sage's response:`;
+Example tone: "Looks like there's some tension here — on April 17th the group agreed on REST, with Jordan and Sam already building around it. Worth aligning before going further."`;
 
   const result = await model.generateContent(prompt);
   return result.response.text().trim();

@@ -8,7 +8,7 @@ const { VoyageAIClient } = _require("voyageai") as typeof import("voyageai");
 
 export function getGeminiClient() {
   const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
-  return genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+  return genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 }
 
 export function getVoyageClient() {

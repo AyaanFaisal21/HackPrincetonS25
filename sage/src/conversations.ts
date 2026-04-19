@@ -11,16 +11,16 @@ const ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID!;
 const AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN!;
 const CONVERSATION_SID = process.env.TWILIO_CONVERSATION_SID!;
 const FROM_NUMBER = process.env.TWILIO_FROM_NUMBER!;
-const PORT = parseInt(process.env.PORT ?? "3000", 10);
+const PORT = parseInt(process.env.PORT ?? "3001", 10);
 const GROUP_CHAT_MEMBERS: string[] = (process.env.GROUP_CHAT_MEMBERS ?? "").split(",").filter(Boolean);
 
 const twilioClient = twilio(ACCOUNT_SID, AUTH_TOKEN);
 
 // Fill phone numbers in before running setup
 const MEMBER_NAMES: Record<string, string> = {
-  "+1XXXXXXXXXX": "Alex",
-  "+1XXXXXXXXXX": "Jordan",
-  "+1XXXXXXXXXX": "Casey",
+  "+16097219222": "Ayaan",
+  "+19257910615": "Bayo",
+  "+16092508572": "Krish",
 };
 
 function isSageAuthor(author: string): boolean {
@@ -61,7 +61,7 @@ export function startServer(): void {
 
     try {
       await ingest(CONVERSATION_SID, [message]);
-      console.log("[Memory] Ingested.");
+      console.log(`[Memory] Ingested message from ${message.speaker}`);
 
       const result = await classify(CONVERSATION_SID, message);
 
