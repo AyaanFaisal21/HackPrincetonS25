@@ -31,6 +31,10 @@ function resolveName(author: string): string {
 }
 
 export function startServer(): void {
+  console.log("[Twilio] Server disabled — using Photon for ingestion");
+  console.log("[Twilio] Run src/photon.ts instead");
+  return;
+
   const app = express();
   app.use(express.urlencoded({ extended: false }));
 

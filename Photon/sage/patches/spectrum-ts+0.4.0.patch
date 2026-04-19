@@ -1,0 +1,33 @@
+diff --git a/node_modules/spectrum-ts/dist/providers/imessage/index.js b/node_modules/spectrum-ts/dist/providers/imessage/index.js
+index 307ff11..ded51de 100644
+--- a/node_modules/spectrum-ts/dist/providers/imessage/index.js
++++ b/node_modules/spectrum-ts/dist/providers/imessage/index.js
+@@ -192,11 +192,27 @@ import {
+ var TAPBACK_NAMES = new Set(
+   Object.values(Reaction).filter((r) => r !== "emoji" && r !== "sticker")
+ );
++function isLikelyGroupChatGuid(guid) {
++  if (!guid) return false;
++  const g = String(guid).toLowerCase();
++  if (g.includes(";+;")) return true;
++  if (/;(sms|imessage);-;chat/i.test(g)) return true;
++  if (/;(sms|imessage);\+;chat/i.test(g)) return true;
++  return false;
++}
++function spaceTypeFromRemoteMessageEvent(event) {
++  if (isLikelyGroupChatGuid(event.chatGuid)) return "group";
++  const guids = event.message?.chatGuids;
++  if (Array.isArray(guids) && guids.some((id) => isLikelyGroupChatGuid(String(id)))) {
++    return "group";
++  }
++  return "dm";
++}
+ var baseMessage = (event) => ({
+   sender: { id: event.message.sender?.address ?? "" },
+   space: {
+     id: event.chatGuid,
+-    type: event.chatGuid.includes(";+;") ? "group" : "dm"
++    type: spaceTypeFromRemoteMessageEvent(event)
+   },
+   timestamp: event.timestamp
+ });
