@@ -104,12 +104,17 @@ or
 export async function respond(
   chatId: string,
   context: MemoryResult[],
-  currentMessage: Message
+  currentMessage: Message,
+  vibe?: string
 ): Promise<string> {
   void chatId;
   const model = getGeminiClient();
 
-  const prompt = `You are Sage, a thoughtful AI participant in a group chat.
+  const vibeLine = vibe
+    ? `\nChat vibe directive (honor this in tone and style): ${vibe}\n`
+    : "";
+
+  const prompt = `You are Sage, a thoughtful AI participant in a group chat.${vibeLine}
 Your role is to surface relevant past context when the group
 is confused or contradicting itself. You are warm, concise,
 and non-authoritative — you never make decisions, you only
